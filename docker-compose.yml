@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  cursor-pro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: cursor-pro-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - MODEL_NAME=${MODEL_NAME:-microsoft/DialoGPT-medium}
+      - MODEL_CACHE_DIR=/app/models
+      - MAX_TOKENS=${MAX_TOKENS:-4096}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - TOP_P=${TOP_P:-0.9}
+      - GPU_ENABLED=${GPU_ENABLED:-false}
+      - DEVICE=${DEVICE:-cpu}
+      - BATCH_SIZE=${BATCH_SIZE:-8}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_WORKERS=${API_WORKERS:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - DEBUG=${DEBUG:-false}
+      - SUPPORTED_LANGUAGES=${SUPPORTED_LANGUAGES:-python,javascript,typescript,java,cpp,rust,go}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-1048576}
+      - MAX_CONTEXT_FILES=${MAX_CONTEXT_FILES:-50}
+    volumes:
+      - cursor_pro_models:/app/models
+      - cursor_pro_logs:/app/logs
+      - cursor_pro_data:/app/data
+      - type: bind
+        source: ${WORKSPACE_PATH:-.}
+        target: /workspace
+        read_only: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-4G}
+          cpus: ${CPU_LIMIT:-2.0}
+        reservations:
+          memory: ${MEMORY_RESERVATION:-2G}
+          cpus: ${CPU_RESERVATION:-1.0}
+
+  # Optional: Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: cursor-pro-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - cursor_pro_redis:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: 0.5
+    profiles:
+      - cache
+
+  # Optional: PostgreSQL for persistent storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: cursor-pro-db
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-cursorpro}
+      - POSTGRES_USER=${POSTGRES_USER:-cursorpro}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-cursorpro123}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - cursor_pro_postgres:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: 1.0
+    profiles:
+      - database
+
+  # Optional: Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cursor-pro-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - cursor_pro_prometheus:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cursor-pro-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+    volumes:
+      - cursor_pro_grafana:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+volumes:
+  cursor_pro_models:
+    driver: local
+  cursor_pro_logs:
+    driver: local
+  cursor_pro_data:
+    driver: local
+  cursor_pro_redis:
+    driver: local
+  cursor_pro_postgres:
+    driver: local
+  cursor_pro_prometheus:
+    driver: local
+  cursor_pro_grafana:
+    driver: local
+
+networks:
+  default:
+    name: cursor-pro-network
